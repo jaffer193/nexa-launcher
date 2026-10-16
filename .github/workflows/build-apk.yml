@@ -1,0 +1,105 @@
+name: Build APK
+
+# Run it by hand: GitHub -> Actions -> "Build APK" -> Run workflow
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    env:
+      # Optional: add a repository secret called CURSEFORGE_API_KEY to enable CurseForge.
+      # Modrinth works without any key.
+      CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
+    steps:
+      # 1) The original open-source launcher, pinned to a known commit
+      - name: Checkout PojavLauncher (base)
+        uses: actions/checkout@v4
+        with:
+          repository: PojavLauncherTeam/PojavLauncher
+          ref: b12ad048157b3aa255d078c235dd4571e1900309
+          submodules: "recursive"
+
+      # 2) This repository (holds nexa.patch with all our changes)
+      - name: Checkout this repository
+        uses: actions/checkout@v4
+        with:
+          path: _mine
+
+      - name: Apply our changes
+        run: git apply --verbose _mine/nexa.patch
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Get LTW (renderer)
+        run: |
+          cd app_pojavlauncher/libs
+          curl -L --fail -o ltw-release.aar https://github.com/PojavLauncherTeam/LTW/releases/latest/download/ltw-release.aar
+
+      - name: Get JRE 8
+        uses: dawidd6/action-download-artifact@v9
+        with:
+          workflow: build.yml
+          path: app_pojavlauncher/src/main/assets/components/jre
+          workflow_conclusion: success
+          repo: PojavLauncherTeam/android-openjdk-build-multiarch
+          branch: buildjre8
+          name: jre8-pojav
+
+      - name: Get JRE 17
+        uses: dawidd6/action-download-artifact@v9
+        with:
+          workflow: build.yml
+          path: app_pojavlauncher/src/main/assets/components/jre-new
+          workflow_conclusion: success
+          repo: PojavLauncherTeam/android-openjdk-build-multiarch
+          branch: buildjre17-21
+          name: jre17-pojav
+
+      - name: Get JRE 21
+        uses: dawidd6/action-download-artifact@v9
+        with:
+          workflow: build.yml
+          path: app_pojavlauncher/src/main/assets/components/jre-21
+          workflow_conclusion: success
+          repo: PojavLauncherTeam/android-openjdk-build-multiarch
+          branch: buildjre17-21
+          name: jre21-pojav
+
+      - name: Keep only the arm64 runtime (smaller APK)
+        run: |
+          find app_pojavlauncher/src/main/assets/components -type f \
+            \( -name 'bin-arm.tar.xz' -o -name 'bin-x86.tar.xz' -o -name 'bin-x86_64.tar.xz' \) -print -delete
+          du -sh app_pojavlauncher/src/main/assets/components/*
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11"
+
+      - name: Build helper JARs
+        run: |
+          ./scripts/languagelist_updater.sh
+          gradle :jre_lwjgl3glfw:build --no-daemon
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build APK
+        run: |
+          gradle :app_pojavlauncher:assembleDebug --no-daemon
+          mkdir out
+          mv app_pojavlauncher/build/outputs/apk/debug/app_pojavlauncher-debug.apk out/Nexa-Launcher.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nexa-Launcher
+          path: out/Nexa-Launcher.apk
+          
