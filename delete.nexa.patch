@@ -1,0 +1,191 @@
+ickListener(v ->
++                mPicker.launch(new String[]{"application/zip", "application/octet-stream", "*/*"}));
++        refresh();
++    }
++
++    private void refresh() {
++        mPacks.clear();
++        mLabels.clear();
++        try {
++            File gameDir = getGameDir();
++            List<String> enabled = ResourcePackManager.readEnabled(gameDir);
++            for (String name : ResourcePackManager.listPacks(gameDir)) {
++                mPacks.add(name);
++                mLabels.add(enabled.contains(name) ? name + getString(R.string.nexa_rp_enabled_suffix) : name);
++            }
++        } catch (RuntimeException ignored) { }
++        mAdapter.notifyDataSetChanged();
++        mEmpty.setVisibility(mPacks.isEmpty() ? View.VISIBLE : View.GONE);
++    }
++
++    private void showActions(String packName) {
++        final File gameDir = getGameDir();
++        boolean isEnabled = ResourcePackManager.readEnabled(gameDir).contains(packName);
++        String[] actions = {
++                getString(isEnabled ? R.string.nexa_rp_disable : R.string.nexa_rp_enable),
++                getString(R.string.nexa_rp_delete)
++        };
++        new AlertDialog.Builder(requireContext())
++                .setTitle(packName)
++                .setItems(actions, (dialog, which) -> {
++                    try {
++                        if (which == 0) ResourcePackManager.setEnabled(gameDir, packName, !isEnabled);
++                        else ResourcePackManager.delete(gameDir, packName);
++                    } catch (IOException e) {
++                        Tools.showError(requireContext(), e);
++                    }
++                    refresh();
++                })
++                .show();
++    }
++
++    private void importPack(@Nullable Uri uri) {
++        if (uri == null) return;
++        final ContentResolver resolver = requireContext().getContentResolver();
++        final File packDir = ResourcePackManager.getPackDir(getGameDir());
++        PojavApplication.sExecutorService.execute(() -> {
++            boolean ok = false;
++            try {
++                String name = queryName(resolver, uri);
++                if (name == null || name.isEmpty()) name = "pack.zip";
++                name = name.replaceAll("[\\\\/:*?\"<>|]", "_");
++                packDir.mkdirs();
++                try (InputStream in = resolver.openInputStream(uri);
++                     OutputStream out = new FileOutputStream(new File(packDir, name))) {
++                    if (in != null) {
++                        byte[] buffer = new byte[8192];
++                        int read;
++                        while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
++                        ok = true;
++                    }
++                }
++            } catch (IOException | RuntimeException e) {
++                e.printStackTrace();
++            }
++            final boolean success = ok;
++            Tools.runOnUiThread(() -> {
++                if (!isAdded()) return;
++                Toast.makeText(requireContext(),
++                        success ? R.string.nexa_rp_added : R.string.nexa_rp_failed,
++                        Toast.LENGTH_SHORT).show();
++                refresh();
++            });
++        });
++    }
++
++    @Nullable
++    private static String queryName(ContentResolver resolver, Uri uri) {
++        try (Cursor cursor = resolver.query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
++            if (cursor != null && cursor.moveToFirst()) return cursor.getString(0);
++        } catch (RuntimeException ignored) { }
++        return null;
++    }
++}
+diff --git a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/fragments/SearchModFragment.java b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/fragments/SearchModFragment.java
+index e2b8ddc..d5b4781 100644
+--- a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/fragments/SearchModFragment.java
++++ b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/fragments/SearchModFragment.java
+@@ -9,6 +9,7 @@ import android.widget.Button;
+ import android.widget.EditText;
+ import android.widget.ImageButton;
+ import android.widget.ProgressBar;
++import android.widget.RadioGroup;
+ import android.widget.TextView;
+ 
+ import androidx.annotation.NonNull;
+@@ -55,7 +56,7 @@ public class SearchModFragment extends Fragment implements ModItemAdapter.Search
+     public SearchModFragment(){
+         super(R.layout.fragment_mod_search);
+         mSearchFilters = new SearchFilters();
+-        mSearchFilters.isModpack = true;
++        mSearchFilters.isModpack = false;
+     }
+ 
+     @Override
+@@ -148,20 +149,24 @@ public class SearchModFragment extends Fragment implements ModItemAdapter.Search
+             TextView mSelectedVersion = dialog.findViewById(R.id.search_mod_selected_mc_version_textview);
+             Button mSelectVersionButton = dialog.findViewById(R.id.search_mod_mc_version_button);
+             Button mApplyButton = dialog.findViewById(R.id.search_mod_apply_filters);
++            RadioGroup mTypeGroup = dialog.findViewById(R.id.search_mod_type_group);
+ 
+             assert mSelectVersionButton != null;
+             assert mSelectedVersion != null;
+             assert mApplyButton != null;
++            assert mTypeGroup != null;
+ 
+             // Setup the expendable list behavior
+             mSelectVersionButton.setOnClickListener(v -> VersionSelectorDialog.open(v.getContext(), true, (id, snapshot)-> mSelectedVersion.setText(id)));
+ 
+             // Apply visually all the current settings
+             mSelectedVersion.setText(mSearchFilters.mcVersion);
++            mTypeGroup.check(mSearchFilters.isModpack ? R.id.search_mod_type_modpacks : R.id.search_mod_type_mods);
+ 
+             // Apply the new settings
+             mApplyButton.setOnClickListener(v -> {
+                 mSearchFilters.mcVersion = mSelectedVersion.getText().toString();
++                mSearchFilters.isModpack = mTypeGroup.getCheckedRadioButtonId() == R.id.search_mod_type_modpacks;
+                 searchMods(mSearchEditText.getText().toString());
+                 dialogInterface.dismiss();
+             });
+diff --git a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/ModItemAdapter.java b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/ModItemAdapter.java
+index 5eab19a..42c9c16 100644
+--- a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/ModItemAdapter.java
++++ b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/ModItemAdapter.java
+@@ -270,6 +270,8 @@ public class ModItemAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
+         private void setStateDetailed(ModDetail detailedItem) {
+             if(detailedItem != null) {
+                 setInstallEnabled(true);
++                mExtendedButton.setText(detailedItem.isModpack ?
++                        R.string.modpack_install_button : R.string.mod_install_button);
+                 mExtendedErrorTextView.setVisibility(View.GONE);
+                 mVersionAdapter.setObjects(Arrays.asList(detailedItem.versionNames));
+                 mExtendedSpinner.setAdapter(mVersionAdapter);
+diff --git a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/CurseforgeApi.java b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/CurseforgeApi.java
+index 940e445..62b506b 100644
+--- a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/CurseforgeApi.java
++++ b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/CurseforgeApi.java
+@@ -114,17 +114,31 @@ public class CurseforgeApi implements ModpackApi{
+             versionNames[i] = modDetail.get("displayName").getAsString();
+ 
+             JsonElement downloadUrl = modDetail.get("downloadUrl");
+-            versionUrls[i] = downloadUrl.getAsString();
++            if(downloadUrl != null && !downloadUrl.isJsonNull()) {
++                versionUrls[i] = downloadUrl.getAsString();
++            } else if(modDetail.has("id") && modDetail.has("fileName")) {
++                // Some authors hide the direct link from the API, fall back to the CDN path
++                int fileId = modDetail.get("id").getAsInt();
++                versionUrls[i] = String.format("https://edge.forgecdn.net/files/%s/%s/%s",
++                        fileId / 1000, fileId % 1000, modDetail.get("fileName").getAsString());
++            }
+ 
++            mcVersionNames[i] = "";
++            StringBuilder loaderText = new StringBuilder();
+             JsonArray gameVersions = modDetail.getAsJsonArray("gameVersions");
+             for(JsonElement jsonElement : gameVersions) {
+                 String gameVersion = jsonElement.getAsString();
+                 if(!sMcVersionPattern.matcher(gameVersion).matches()) {
++                    // Non-version entries are the mod loaders (Fabric, Forge, NeoForge, Quilt) or Client/Server
++                    if(!item.isModpack && isLoaderName(gameVersion)) {
++                        if(loaderText.length() > 0) loaderText.append('/');
++                        loaderText.append(gameVersion);
++                    }
+                     continue;
+                 }
+-                mcVersionNames[i] = gameVersion;
+-                break;
++                if(mcVersionNames[i].isEmpty()) mcVersionNames[i] = gameVersion;
+             }
++            if(loaderText.length() > 0) versionNames[i] += " [" + loaderText + "]";
+ 
+             hashes[i] = getSha1FromModData(modDetail);
+         }
+@@ -133,7 +147,10 @@ public class CurseforgeApi implements ModpackApi{
+ 
+     @Override
+     public ModLoader installMod(ModDetail modDetail, int selectedVersion) throws IOException{
+-        //TODO considering only modpacks for now
++        if(!modDetail.isModpack) {
++            ModInstaller.installSingleMod(modDetail, selectedVersion);
++            return null;
++        }
+         return ModpackInstaller.installModpack(modDetail, selectedVe
