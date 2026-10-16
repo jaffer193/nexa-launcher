@@ -37,6 +37,320 @@ index aafdd1e..29129f8 100644
          }
          gplay {
              initWith release
+diff --git a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/authenticator/ElyByAuth.java b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/authenticator/ElyByAuth.java
+new file mode 100644
+index 0000000..73a5a12
+--- /dev/null
++++ b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/authenticator/ElyByAuth.java
+@@ -0,0 +1,48 @@
++package net.kdt.pojavlaunch.authenticator;
++
++import com.google.gson.JsonObject;
++import com.google.gson.JsonParser;
++
++import java.io.InputStreamReader;
++import java.io.OutputStream;
++import java.net.HttpURLConnection;
++import java.net.URL;
++import java.nio.charset.StandardCharsets;
++
++/** Handles authentication with Ely.by accounts for custom skin and login support */
++public class ElyByAuth {
++    private static final String AUTH_URL = "https://authserver.ely.by/authserver/authenticate";
++
++    public static class ElyResult {
++        public String username;
++        public String accessToken;
++        public String uuid;
++    }
++
++    public static ElyResult login(String email, String password) throws Exception {
++        JsonObject payload = new JsonObject();
++        JsonObject agent = new JsonObject();
++        agent.addProperty("name", "Minecraft");
++        agent.addProperty("version", 1);
++        payload.add("agent", agent);
++        payload.addProperty("username", email);
++        payload.addProperty("password", password);
++        payload.addProperty("requestUser", true);
++
++        URL url = new URL(AUTH_URL);
++        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
++        conn.setRequestMethod("POST");
++        conn.setRequestProperty("Content-Type", "application/json");
++        conn.setDoOutput(true);
++
++        try (OutputStream os = conn.getOutputStream()) {
++            os.write(payload.toString().getBytes(StandardCharsets.UTF_8));
++        }
++
++        JsonObject response = JsonParser.parseReader(new InputStreamReader(conn.getInputStream())).getAsJsonObject();
++        ElyResult result = new ElyResult();
++        result.username = response.getAsJsonObject("selectedProfile").get("name").getAsString();
++        result.uuid = response.getAsJsonObject("selectedProfile").get("id").getAsString();
++        result.accessToken = response.get("accessToken").getAsString();
++        return result;
++    }
++}
+diff --git a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/fragments/MainMenuFragment.java b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/fragments/MainMenuFragment.java
+index 364c3d0..22a45c7 100644
+--- a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/fragments/MainMenuFragment.java
++++ b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/fragments/MainMenuFragment.java
+@@ -50,6 +50,19 @@ public class MainMenuFragment extends Fragment {
+         Button mPlayButton = view.findViewById(R.id.play_button);
+         mVersionSpinner = view.findViewById(R.id.mc_version_spinner);
+ 
++        Button mQuickPacksButton = view.findViewById(R.id.quick_packs_button);
++        Button mResourcePacksButton = view.findViewById(R.id.resourcepacks_button);
++        mQuickPacksButton.setOnClickListener(v -> {
++            // Same rule as the other mod installers: not for local/demo accounts
++            if(Tools.isLocalProfile(requireContext()) || Tools.isDemoProfile(requireContext())){
++                Toast.makeText(requireContext(), R.string.toast_not_available_demo, Toast.LENGTH_LONG).show();
++                return;
++            }
++            Tools.swapFragment(requireActivity(), QuickPacksFragment.class, QuickPacksFragment.TAG, null);
++        });
++        mResourcePacksButton.setOnClickListener(v ->
++                Tools.swapFragment(requireActivity(), ResourcePacksFragment.class, ResourcePacksFragment.TAG, null));
++
+         mNewsButton.setOnClickListener(v -> Tools.openURL(requireActivity(), Tools.URL_HOME));
+         mDiscordButton.setOnClickListener(v -> Tools.openURL(requireActivity(), getString(R.string.discord_invite)));
+         mCustomControlButton.setOnClickListener(v -> startActivity(new Intent(requireContext(), CustomControlsActivity.class)));
+diff --git a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/fragments/QuickPacksFragment.java b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/fragments/QuickPacksFragment.java
+new file mode 100644
+index 0000000..02f8e3f
+--- /dev/null
++++ b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/fragments/QuickPacksFragment.java
+@@ -0,0 +1,78 @@
++package net.kdt.pojavlaunch.fragments;
++
++import android.os.Bundle;
++import android.view.View;
++import android.widget.TextView;
++import android.widget.Toast;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++import androidx.fragment.app.Fragment;
++
++import net.kdt.pojavlaunch.PojavApplication;
++import net.kdt.pojavlaunch.R;
++import net.kdt.pojavlaunch.Tools;
++import net.kdt.pojavlaunch.modloaders.modpacks.api.QuickPackInstaller;
++import net.kdt.pojavlaunch.value.launcherprofiles.LauncherProfiles;
++import net.kdt.pojavlaunch.value.launcherprofiles.MinecraftProfile;
++
++import java.util.concurrent.atomic.AtomicBoolean;
++
++/** One-tap installs of curated mod lists (FPS, PvP, Survival) into the selected profile */
++public class QuickPacksFragment extends Fragment {
++    public static final String TAG = "QuickPacksFragment";
++    private static final AtomicBoolean sBusy = new AtomicBoolean(false);
++
++    private TextView mStatus;
++
++    public QuickPacksFragment() {
++        super(R.layout.fragment_quick_packs);
++    }
++
++    @Override
++    public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
++        mStatus = view.findViewById(R.id.pack_status);
++        view.findViewById(R.id.pack_perf_install).setOnClickListener(v ->
++                install(getString(R.string.nexa_pack_perf_title), QuickPackInstaller.PACK_PERFORMANCE));
++        view.findViewById(R.id.pack_pvp_install).setOnClickListener(v ->
++                install(getString(R.string.nexa_pack_pvp_title), QuickPackInstaller.PACK_PVP));
++        view.findViewById(R.id.pack_survival_install).setOnClickListener(v ->
++                install(getString(R.string.nexa_pack_survival_title), QuickPackInstaller.PACK_SURVIVAL));
++    }
++
++    private void install(String packTitle, String[] slugs) {
++        if (!sBusy.compareAndSet(false, true)) {
++            Toast.makeText(requireContext(), R.string.nexa_pack_busy, Toast.LENGTH_SHORT).show();
++            return;
++        }
++        final MinecraftProfile profile;
++        try {
++            profile = LauncherProfiles.getCurrentProfile();
++        } catch (RuntimeException e) {
++            sBusy.set(false);
++            mStatus.setText(R.string.nexa_pack_need_modded);
++            return;
++        }
++        final String workingFormat = getString(R.string.nexa_pack_working);
++        final String doneFormat = getString(R.string.nexa_pack_done);
++        final String needModded = getString(R.string.nexa_pack_need_modded);
++        mStatus.setText("…");
++
++        PojavApplication.sExecutorService.execute(() -> {
++            QuickPackInstaller.Result result;
++            try {
++                result = QuickPackInstaller.install(profile, slugs, (slug, index, total) ->
++                        Tools.runOnUiThread(() -> setStatus(String.format(workingFormat, slug, index, total))));
++            } finally {
++                sBusy.set(false);
++            }
++            final String message = result.needModdedProfile ? needModded
++                    : String.format(doneFormat, result.installed, result.skipped);
++            Tools.runOnUiThread(() -> setStatus(message));
++        });
++    }
++
++    private void setStatus(String text) {
++        if (mStatus != null && isAdded()) mStatus.setText(text);
++    }
++}
+diff --git a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/fragments/ResourcePacksFragment.java b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/fragments/ResourcePacksFragment.java
+new file mode 100644
+index 0000000..2a3daa4
+--- /dev/null
++++ b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/fragments/ResourcePacksFragment.java
+@@ -0,0 +1,145 @@
++package net.kdt.pojavlaunch.fragments;
++
++import android.app.AlertDialog;
++import android.content.ContentResolver;
++import android.database.Cursor;
++import android.net.Uri;
++import android.os.Bundle;
++import android.provider.OpenableColumns;
++import android.view.View;
++import android.widget.ArrayAdapter;
++import android.widget.ListView;
++import android.widget.TextView;
++import android.widget.Toast;
++
++import androidx.activity.result.ActivityResultLauncher;
++import androidx.activity.result.contract.ActivityResultContracts;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++import androidx.fragment.app.Fragment;
++
++import net.kdt.pojavlaunch.PojavApplication;
++import net.kdt.pojavlaunch.R;
++import net.kdt.pojavlaunch.Tools;
++import net.kdt.pojavlaunch.modloaders.modpacks.api.ResourcePackManager;
++import net.kdt.pojavlaunch.value.launcherprofiles.LauncherProfiles;
++
++import java.io.File;
++import java.io.FileOutputStream;
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.OutputStream;
++import java.util.ArrayList;
++import java.util.List;
++
++/** Lets the user add, enable, disable and delete resource packs of the selected profile */
++public class ResourcePacksFragment extends Fragment {
++    public static final String TAG = "ResourcePacksFragment";
++
++    private ListView mList;
++    private TextView mEmpty;
++    private final List<String> mPacks = new ArrayList<>();
++    private final List<String> mLabels = new ArrayList<>();
++    private ArrayAdapter<String> mAdapter;
++
++    private final ActivityResultLauncher<String[]> mPicker =
++            registerForActivityResult(new ActivityResultContracts.OpenDocument(), this::importPack);
++
++    public ResourcePacksFragment() {
++        super(R.layout.fragment_resource_packs);
++    }
++
++    private File getGameDir() {
++        return Tools.getGameDirPath(LauncherProfiles.getCurrentProfile());
++    }
++
++    @Override
++    public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
++        mList = view.findViewById(R.id.rp_list);
++        mEmpty = view.findViewById(R.id.rp_empty);
++        mAdapter = new ArrayAdapter<>(requireContext(), android.R.layout.simple_list_item_1, mLabels);
++        mList.setAdapter(mAdapter);
++        mList.setOnItemClickListener((parent, v, position, id) -> showActions(mPacks.get(position)));
++        view.findViewById(R.id.rp_add).setOnClickListener(v ->
++                mPicker.launch(new String[]{"application/zip", "application/octet-stream", "*/*"}));
++        refresh();
++    }
++
++    private void refresh() {
++        mPacks.clear();
++        mLabels.clear();
++        try {
++            File gameDir = getGameDir();
++            List<String> enabled = ResourcePackManager.readEnabled(gameDir);
++            for (String name : ResourcePackManager.listPacks(gameDir)) {
++                mPacks.add(name);
++                mLabels.add(enabled.contains(name) ? name + getString(R.string.nexa_rp_enabled_suffix) : name);
++            }
++        } catch (RuntimeException ignored) { }
++        mAdapter.notifyDataSetChanged();
++        mEmpty.setVisibility(mPacks.isEmpty() ? View.VISIBLE : View.GONE);
++    }
++
++    private void showActions(String packName) {
++        final File gameDir = getGameDir();
++        boolean isEnabled = ResourcePackManager.readEnabled(gameDir).contains(packName);
++        String[] actions = {
++                getString(isEnabled ? R.string.nexa_rp_disable : R.string.nexa_rp_enable),
++                getString(R.string.nexa_rp_delete)
++        };
++        new AlertDialog.Builder(requireContext())
++                .setTitle(packName)
++                .setItems(actions, (dialog, which) -> {
++                    try {
++                        if (which == 0) ResourcePackManager.setEnabled(gameDir, packName, !isEnabled);
++                        else ResourcePackManager.delete(gameDir, packName);
++                    } catch (IOException e) {
++                        Tools.showError(requireContext(), e);
++                    }
++                    refresh();
++                })
++                .show();
++    }
++
++    private void importPack(@Nullable Uri uri) {
++        if (uri == null) return;
++        final ContentResolver resolver = requireContext().getContentResolver();
++        final File packDir = ResourcePackManager.getPackDir(getGameDir());
++        PojavApplication.sExecutorService.execute(() -> {
++            boolean ok = false;
++            try {
++                String name = queryName(resolver, uri);
++                if (name == null || name.isEmpty()) name = "pack.zip";
++                name = name.replaceAll("[\\\\/:*?\"<>|]", "_");
++                packDir.mkdirs();
++                try (InputStream in = resolver.openInputStream(uri);
++                     OutputStream out = new FileOutputStream(new File(packDir, name))) {
++                    if (in != null) {
++                        byte[] buffer = new byte[8192];
++                        int read;
++                        while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
++                        ok = true;
++                    }
++                }
++            } catch (IOException | RuntimeException e) {
++                e.printStackTrace();
++            }
++            final boolean success = ok;
++            Tools.runOnUiThread(() -> {
++                if (!isAdded()) return;
++                Toast.makeText(requireContext(),
++                        success ? R.string.nexa_rp_added : R.string.nexa_rp_failed,
++                        Toast.LENGTH_SHORT).show();
++                refresh();
++            });
++        });
++    }
++
++    @Nullable
++    private static String queryName(ContentResolver resolver, Uri uri) {
++        try (Cursor cursor = resolver.query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
++            if (cursor != null && cursor.moveToFirst()) return cursor.getString(0);
++        } catch (RuntimeException ignored) { }
++        return null;
++    }
++}
 diff --git a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/fragments/SearchModFragment.java b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/fragments/SearchModFragment.java
 index e2b8ddc..d5b4781 100644
 --- a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/fragments/SearchModFragment.java
@@ -98,384 +412,4 @@ index 5eab19a..42c9c16 100644
                  mExtendedSpinner.setAdapter(mVersionAdapter);
 diff --git a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/CurseforgeApi.java b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/CurseforgeApi.java
 index 940e445..62b506b 100644
---- a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/CurseforgeApi.java
-+++ b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/CurseforgeApi.java
-@@ -114,17 +114,31 @@ public class CurseforgeApi implements ModpackApi{
-             versionNames[i] = modDetail.get("displayName").getAsString();
- 
-             JsonElement downloadUrl = modDetail.get("downloadUrl");
--            versionUrls[i] = downloadUrl.getAsString();
-+            if(downloadUrl != null && !downloadUrl.isJsonNull()) {
-+                versionUrls[i] = downloadUrl.getAsString();
-+            } else if(modDetail.has("id") && modDetail.has("fileName")) {
-+                // Some authors hide the direct link from the API, fall back to the CDN path
-+                int fileId = modDetail.get("id").getAsInt();
-+                versionUrls[i] = String.format("https://edge.forgecdn.net/files/%s/%s/%s",
-+                        fileId / 1000, fileId % 1000, modDetail.get("fileName").getAsString());
-+            }
- 
-+            mcVersionNames[i] = "";
-+            StringBuilder loaderText = new StringBuilder();
-             JsonArray gameVersions = modDetail.getAsJsonArray("gameVersions");
-             for(JsonElement jsonElement : gameVersions) {
-                 String gameVersion = jsonElement.getAsString();
-                 if(!sMcVersionPattern.matcher(gameVersion).matches()) {
-+                    // Non-version entries are the mod loaders (Fabric, Forge, NeoForge, Quilt) or Client/Server
-+                    if(!item.isModpack && isLoaderName(gameVersion)) {
-+                        if(loaderText.length() > 0) loaderText.append('/');
-+                        loaderText.append(gameVersion);
-+                    }
-                     continue;
-                 }
--                mcVersionNames[i] = gameVersion;
--                break;
-+                if(mcVersionNames[i].isEmpty()) mcVersionNames[i] = gameVersion;
-             }
-+            if(loaderText.length() > 0) versionNames[i] += " [" + loaderText + "]";
- 
-             hashes[i] = getSha1FromModData(modDetail);
-         }
-@@ -133,7 +147,10 @@ public class CurseforgeApi implements ModpackApi{
- 
-     @Override
-     public ModLoader installMod(ModDetail modDetail, int selectedVersion) throws IOException{
--        //TODO considering only modpacks for now
-+        if(!modDetail.isModpack) {
-+            ModInstaller.installSingleMod(modDetail, selectedVersion);
-+            return null;
-+        }
-         return ModpackInstaller.installModpack(modDetail, selectedVersion, this::installCurseforgeZip);
-     }
- 
-@@ -218,6 +235,11 @@ public class CurseforgeApi implements ModpackApi{
-         return new ModLoader(modLoaderTypeInt, modLoaderVersion, minecraft.version);
-     }
- 
-+    private static boolean isLoaderName(String name) {
-+        return name.equalsIgnoreCase("Fabric") || name.equalsIgnoreCase("Forge")
-+                || name.equalsIgnoreCase("NeoForge") || name.equalsIgnoreCase("Quilt");
-+    }
-+
-     private String getDownloadUrl(long projectID, long fileID) {
-         // First try the official api endpoint
-         JsonObject response = mApiHandler.get("mods/"+projectID+"/files/"+fileID+"/download-url", JsonObject.class);
-diff --git a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/ModInstaller.java b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/ModInstaller.java
-new file mode 100644
-index 0000000..af54661
---- /dev/null
-+++ b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/ModInstaller.java
-@@ -0,0 +1,55 @@
-+package net.kdt.pojavlaunch.modloaders.modpacks.api;
-+
-+import com.kdt.mcgui.ProgressLayout;
-+
-+import net.kdt.pojavlaunch.R;
-+import net.kdt.pojavlaunch.Tools;
-+import net.kdt.pojavlaunch.modloaders.modpacks.models.ModDetail;
-+import net.kdt.pojavlaunch.progresskeeper.DownloaderProgressWrapper;
-+import net.kdt.pojavlaunch.utils.DownloadUtils;
-+import net.kdt.pojavlaunch.value.launcherprofiles.LauncherProfiles;
-+
-+import java.io.File;
-+import java.io.IOException;
-+import java.net.URLDecoder;
-+import java.util.concurrent.Callable;
-+
-+/**
-+ * Installs a single mod (.jar) into the "mods" folder of the currently selected profile.
-+ */
-+public class ModInstaller {
-+
-+    public static void installSingleMod(ModDetail modDetail, int selectedVersion) throws IOException {
-+        String url = modDetail.versionUrls[selectedVersion];
-+        if (url == null) throw new IOException("This mod version has no download link");
-+        String hash = modDetail.versionHashes[selectedVersion];
-+
-+        File modsDir = new File(Tools.getGameDirPath(LauncherProfiles.getCurrentProfile()), "mods");
-+        File target = new File(modsDir, fileNameFromUrl(url));
-+
-+        try {
-+            byte[] buffer = new byte[8192];
-+            DownloadUtils.ensureSha1(target, hash, (Callable<Void>) () -> {
-+                DownloadUtils.downloadFileMonitored(url, target, buffer,
-+                        new DownloaderProgressWrapper(R.string.mod_download_downloading,
-+                                ProgressLayout.INSTALL_MODPACK));
-+                return null;
-+            });
-+        } finally {
-+            ProgressLayout.clearProgress(ProgressLayout.INSTALL_MODPACK);
-+        }
-+    }
-+
-+    static String fileNameFromUrl(String url) {
-+        String clean = url;
-+        int query = clean.indexOf('?');
-+        if (query != -1) clean = clean.substring(0, query);
-+        clean = clean.substring(clean.lastIndexOf('/') + 1);
-+        try {
-+            clean = URLDecoder.decode(clean.replace("+", "%2B"), "UTF-8");
-+        } catch (Exception ignored) { }
-+        clean = clean.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
-+        if (clean.isEmpty()) clean = "mod.jar";
-+        return clean;
-+    }
-+}
-diff --git a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/ModpackApi.java b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/ModpackApi.java
-index 141468a..8ae20d8 100644
---- a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/ModpackApi.java
-+++ b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/ModpackApi.java
-@@ -2,6 +2,7 @@ package net.kdt.pojavlaunch.modloaders.modpacks.api;
- 
- 
- import android.content.Context;
-+import android.widget.Toast;
- 
- import com.kdt.mcgui.ProgressLayout;
- 
-@@ -54,10 +55,18 @@ public interface ModpackApi {
-         PojavApplication.sExecutorService.execute(() -> {
-             try {
-                 ModLoader loaderInfo = installMod(modDetail, selectedVersion);
--                if (loaderInfo == null) return;
-+                if (loaderInfo == null) {
-+                    if(!modDetail.isModpack) {
-+                        Tools.runOnUiThread(() -> Toast.makeText(context,
-+                                context.getString(R.string.mod_install_success, modDetail.title),
-+                                Toast.LENGTH_LONG).show());
-+                    }
-+                    return;
-+                }
-                 loaderInfo.getDownloadTask(new NotificationDownloadListener(context, loaderInfo)).run();
-             }catch (IOException e) {
--                Tools.showErrorRemote(context, R.string.modpack_install_download_failed, e);
-+                Tools.showErrorRemote(context, modDetail.isModpack ?
-+                        R.string.modpack_install_download_failed : R.string.mod_install_download_failed, e);
-             }
-         });
-     }
-diff --git a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/ModrinthApi.java b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/ModrinthApi.java
-index 73a5863..fa221eb 100644
---- a/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/ModrinthApi.java
-+++ b/app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/modloaders/modpacks/api/ModrinthApi.java
-@@ -95,10 +95,28 @@ public class ModrinthApi implements ModpackApi{
-             JsonObject version = response.get(i).getAsJsonObject();
-             names[i] = version.get("name").getAsString();
-             mcNames[i] = version.get("game_versions").getAsJsonArray().get(0).getAsString();
--            urls[i] = version.get("files").getAsJsonArray().get(0).getAsJsonObject().get("url").getAsString();
-+            if(!item.isModpack && version.has("loaders")) {
-+                // Show the loader (fabric, forge...) so the user can pick the right file
-+                JsonArray loaders = version.getAsJsonArray("loaders");
-+                StringBuilder loaderText = new StringBuilder();
-+                for(int l = 0; l < loaders.size(); l++) {
-+                    if(l > 0) loaderText.append('/');
-+                    loaderText.append(loaders.get(l).getAsString());
-+                }
-+                if(loaderText.length() > 0) names[i] += " [" + loaderText + "]";
-+            }
-+            JsonArray files = version.getAsJsonArray("files");
-+            JsonObject file = files.get(0).getAsJsonObject();
-+            for(int f = 0; f < files.size(); f++) {
-+                JsonObject candidate = files.get(f).getAsJsonObject();
-+                if(candidate.has("primary") && candidate.get("primary").getAsBoolean()) {
-+                    file = candidate;
-+                    break;
-+                }
-+            }
-+            urls[i] = file.get("url").getAsString();
-             // Assume there may not be hashes, in case the API changes
--            JsonObject hashesMap = version.getAsJsonArray("files").get(0).getAsJsonObject()
--                    .get("hashes").getAsJsonObject();
-+            JsonObject hashesMap = file.get("hashes").getAsJsonObject();
-             if(hashesMap == null || hashesMap.get("sha1") == null){
-                 hashes[i] = null;
-                 continue;
-@@ -112,7 +130,10 @@ public class ModrinthApi implements ModpackApi{
- 
-     @Override
-     public ModLoader installMod(ModDetail modDetail, int selectedVersion) throws IOException{
--        //TODO considering only modpacks for now
-+        if(!modDetail.isModpack) {
-+            ModInstaller.installSingleMod(modDetail, selectedVersion);
-+            return null;
-+        }
-         return ModpackInstaller.installModpack(modDetail, selectedVersion, this::installMrpack);
-     }
- 
-diff --git a/app_pojavlauncher/src/main/res/drawable/background_card.xml b/app_pojavlauncher/src/main/res/drawable/background_card.xml
-index 6ca24ef..297bda8 100644
---- a/app_pojavlauncher/src/main/res/drawable/background_card.xml
-+++ b/app_pojavlauncher/src/main/res/drawable/background_card.xml
-@@ -1,11 +1,12 @@
- <?xml version="1.0" encoding="utf-8"?>
- <shape xmlns:android="http://schemas.android.com/apk/res/android"
-     android:shape="rectangle">
--    <corners android:radius="@dimen/_8sdp" />
-+    <corners android:radius="@dimen/_12sdp" />
-     <padding
-         android:bottom="@dimen/_2sdp"
-         android:left="@dimen/_2sdp"
-         android:right="@dimen/_2sdp"
-         android:top="@dimen/_2sdp" />
--    <solid android:color="@color/background_status_bar"/>
-+    <solid android:color="@color/background_surface"/>
-+    <stroke android:width="1dp" android:color="@color/divider" />
- </shape>
-diff --git a/app_pojavlauncher/src/main/res/drawable/mine_button_background.xml b/app_pojavlauncher/src/main/res/drawable/mine_button_background.xml
-index fb3d9b1..b3ee8e7 100644
---- a/app_pojavlauncher/src/main/res/drawable/mine_button_background.xml
-+++ b/app_pojavlauncher/src/main/res/drawable/mine_button_background.xml
-@@ -1,6 +1,27 @@
- <?xml version="1.0" encoding="utf-8" ?>
- <selector xmlns:android="http://schemas.android.com/apk/res/android">
--    <item android:state_pressed="true" android:drawable="@drawable/mine_button_focused" />
--    <item android:state_enabled="false" android:drawable="@drawable/mine_button_focused" />
--    <item android:drawable="@drawable/mine_button_unfocused" />
-+    <item android:state_enabled="false">
-+        <shape android:shape="rectangle">
-+            <corners android:radius="12dp" />
-+            <solid android:color="@color/background_disabled" />
-+        </shape>
-+    </item>
-+    <item android:state_pressed="true">
-+        <shape android:shape="rectangle">
-+            <corners android:radius="12dp" />
-+            <gradient
-+                android:angle="0"
-+                android:startColor="@color/accent_pressed_start"
-+                android:endColor="@color/accent_pressed_end" />
-+        </shape>
-+    </item>
-+    <item>
-+        <shape android:shape="rectangle">
-+            <corners android:radius="12dp" />
-+            <gradient
-+                android:angle="0"
-+                android:startColor="@color/accent_start"
-+                android:endColor="@color/accent_end" />
-+        </shape>
-+    </item>
- </selector>
-diff --git a/app_pojavlauncher/src/main/res/layout/dialog_mod_filters.xml b/app_pojavlauncher/src/main/res/layout/dialog_mod_filters.xml
-index 911f02b..d87c2bf 100644
---- a/app_pojavlauncher/src/main/res/layout/dialog_mod_filters.xml
-+++ b/app_pojavlauncher/src/main/res/layout/dialog_mod_filters.xml
-@@ -47,6 +47,30 @@
-         app:layout_constraintEnd_toEndOf="parent"
-         app:layout_constraintTop_toTopOf="@+id/search_mod_selected_mc_version_textview" />
- 
-+    <!-- Mods or modpacks -->
-+    <RadioGroup
-+        android:id="@+id/search_mod_type_group"
-+        android:layout_width="match_parent"
-+        android:layout_height="wrap_content"
-+        android:layout_marginTop="@dimen/padding_large"
-+        android:orientation="horizontal"
-+        app:layout_constraintTop_toBottomOf="@id/search_mod_selected_mc_version_textview">
-+
-+        <RadioButton
-+            android:id="@+id/search_mod_type_mods"
-+            android:layout_width="0dp"
-+            android:layout_height="wrap_content"
-+            android:layout_weight="1"
-+            android:text="@string/search_mod_type_mods" />
-+
-+        <RadioButton
-+            android:id="@+id/search_mod_type_modpacks"
-+            android:layout_width="0dp"
-+            android:layout_height="wrap_content"
-+            android:layout_weight="1"
-+            android:text="@string/search_mod_type_modpacks" />
-+    </RadioGroup>
-+
-     <!-- Apply -->
-     <com.kdt.mcgui.MineButton
-         android:id="@+id/search_mod_apply_filters"
-@@ -55,7 +79,7 @@
-         android:text="@string/generic_apply"
-         android:layout_marginVertical="@dimen/padding_large"
- 
--        app:layout_constraintTop_toBottomOf="@id/search_mod_selected_mc_version_textview"
-+        app:layout_constraintTop_toBottomOf="@id/search_mod_type_group"
-         />
- 
- </androidx.constraintlayout.widget.ConstraintLayout>
-\ No newline at end of file
-diff --git a/app_pojavlauncher/src/main/res/values/colors.xml b/app_pojavlauncher/src/main/res/values/colors.xml
-index 3be412b..8862d10 100644
---- a/app_pojavlauncher/src/main/res/values/colors.xml
-+++ b/app_pojavlauncher/src/main/res/values/colors.xml
-@@ -3,13 +3,21 @@
-     <color name="control_button_color">#4CC4C4C4</color>
-     <color name="control_button_pressed_color">#4D000000</color>
- 
--    <color name="minebutton_color">#57CC33</color>
--    <color name="background_app">#181818</color>
--    <color name="divider">@color/background_overlay</color>
--    <color name="background_overlay">#464646</color>
--    <color name="background_status_bar">#242424</color>
--    <color name="background_bottom_bar">#232323</color>
-+    <!-- Premium dark palette: deep navy surfaces with a blue-violet accent -->
-+    <color name="accent_start">#7C5CFF</color>
-+    <color name="accent_end">#3D8BFF</color>
-+    <color name="accent_pressed_start">#5A3FD6</color>
-+    <color name="accent_pressed_end">#2A6BD1</color>
-+    <color name="minebutton_color">#7C5CFF</color>
-+
-+    <color name="background_app">#0B0E1A</color>
-+    <color name="divider">#1F2540</color>
-+    <color name="background_overlay">#1A1F36</color>
-+    <color name="background_status_bar">#10142A</color>
-+    <color name="background_bottom_bar">#0E1224</color>
-+    <color name="background_surface">#141935</color>
-+    <color name="background_disabled">#2A2F4A</color>
- 
-     <color name="primary_text">#FFFFFF</color>
--    <color name="secondary_text">#B2B2B2</color>
--</resources>
-\ No newline at end of file
-+    <color name="secondary_text">#9AA3C7</color>
-+</resources>
-diff --git a/app_pojavlauncher/src/main/res/values/strings.xml b/app_pojavlauncher/src/main/res/values/strings.xml
-index 95c5d44..3054f55 100644
---- a/app_pojavlauncher/src/main/res/values/strings.xml
-+++ b/app_pojavlauncher/src/main/res/values/strings.xml
-@@ -1,7 +1,7 @@
- <?xml version="1.0" encoding="utf-8"?>
- <resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="MissingTranslation">
-     <!-- App name part -->
--    <string name="app_name">PojavLauncher (Minecraft: Java Edition for Android)</string>
-+    <string name="app_name">Nexa Launcher</string>
-     <string name="app_short_name">PojavLauncher</string>
- 
-     <!-- Action bar part -->
-@@ -316,7 +316,7 @@
-     <string name="create_profile_optifine">Create OptiFine profile</string>
- 
- 
--    <string name="hint_search_modpack">Search for modpacks</string>
-+    <string name="hint_search_modpack">Search mods and modpacks</string>
- 
-     <string name="preference_vulkan_driver_system_title">Use system Vulkan driver</string>
-     <string name="preference_vulkan_driver_system_description">Force the launcher to use the system Vulkan driver instead of Turnip on Adreno GPUs. Only affects Zink and mods that use Vulkan.</string>
-@@ -325,7 +325,7 @@
-     <string name="generic_apply">Apply</string>
-     <string name="generic_debug">Debug</string>
- 
--    <string name="search_modpack_no_result">No modpacks found</string>
-+    <string name="search_modpack_no_result">Nothing found</string>
-     <string name="search_modpack_error">Failed to find modpacks</string>
-     <string name="search_modpack_download_error">Failed to download modpack metadata</string>
- 
-@@ -339,6 +339,12 @@
-     <string name="modpack_install_modloader_download_failed">Failed to download the mod loader files</string>
-     <string name="modpack_install_download_failed">Failed to download modpack files</string>
-     <string name="modpack_install_button">Create modpack profile</string>
-+    <string name="mod_install_button">Install mod</string>
-+    <string name="mod_download_downloading">Downloading mod (%.2f MB / %.2f MB)</string>
-+    <string name="mod_install_success">%1$s was installed in the selected profile</string>
-+    <string name="mod_install_download_failed">Failed to download the mod</string>
-+    <string name="search_mod_type_mods">Mods</string>
-+    <string name="search_mod_type_modpacks">Modpacks</string>
- 
-     <string name="notif_error_occured">An error has occurred</string>
-     <string name="notif_error_occured_desc">Click to see more details</string>
+--- a/app_pojavlauncher/src/main/
